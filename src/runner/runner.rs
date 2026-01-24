@@ -2,7 +2,7 @@ use crate::fuzzer::coverage::Coverage;
 use crate::fuzzer::error::Error;
 use crate::mutator::types::Type;
 
-pub trait Runner {
+pub trait Runner: Send {
     /// Runs the selected target
     fn execute(&mut self, inputs: Vec<Type>)
         -> Result<Option<Coverage>, (Option<Coverage>, Error)>;
@@ -16,8 +16,20 @@ pub trait Runner {
     fn get_target_function(&self) -> Type;
     /// Returns the max coverage
     fn get_max_coverage(&self) -> usize;
+    /// Returns a gas-enabled runner if supported
+    fn as_gas_runner(&mut self) -> Option<&mut dyn GasRunner> {
+        None
+    }
 }
 
 pub trait StatefulRunner: Runner {
     fn setup(&mut self);
+}
+
+pub trait GasRunner: Send {
+    /// Runs the selected target and returns gas used on success
+    fn execute_with_gas(
+        &mut self,
+        inputs: Vec<Type>,
+    ) -> Result<(Option<Coverage>, u64), (Option<Coverage>, Error)>;
 }
