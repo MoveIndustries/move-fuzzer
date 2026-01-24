@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 
 #[derive(Serialize, Deserialize)]
@@ -13,6 +14,9 @@ pub struct Config {
     pub contract: Option<String>,
     // How many execs before coverage update
     pub execs_before_cov_update: u64,
+    // How many execs before printing status in non-UI mode
+    #[serde(default = "default_status_print_interval")]
+    pub execs_before_status_print: u64,
     // Where to put the corpus
     pub corpus_dir: String,
     // Where to put the crash files
@@ -20,7 +24,17 @@ pub struct Config {
     // Fuzzing functions prefix
     pub fuzz_functions_prefix: String,
     // Max number of call in call sequence
-    pub max_call_sequence_size: u32
+    pub max_call_sequence_size: u32,
+    // Optional Aptos helper mapping
+    #[serde(default)]
+    pub aptos_helpers: HashMap<String, String>,
+    // Optional file path for Aptos stateless trace logs
+    #[serde(default)]
+    pub aptos_trace_log: Option<String>,
+}
+
+fn default_status_print_interval() -> u64 {
+    100_000
 }
 
 impl Config {
@@ -32,10 +46,13 @@ impl Config {
             seed: Some(4284),
             contract: None,
             execs_before_cov_update: 10_000,
+            execs_before_status_print: default_status_print_interval(),
             corpus_dir: "./corpus".to_string(),
             crashes_dir: "./crashes".to_string(),
             fuzz_functions_prefix: "fuzz_".to_string(),
-            max_call_sequence_size: 5
+            max_call_sequence_size: 5,
+            aptos_helpers: HashMap::new(),
+            aptos_trace_log: None,
         }
     }
 

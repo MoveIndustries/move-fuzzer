@@ -1,9 +1,18 @@
 use bichannel::Channel;
+#[cfg(feature = "aptos")]
+use aptos_framework::BuiltPackage;
+#[cfg(feature = "aptos")]
+use aptos_framework::BuildOptions;
+#[cfg(feature = "aptos")]
+use bcs;
+#[cfg(feature = "sui")]
 use sui_move_build::BuildConfig;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(feature = "aptos")]
+use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::Instant;
 use time::Duration;
@@ -17,17 +26,31 @@ use crate::ui::ui::{Ui, UiEvent, UiEventData};
 use crate::worker::stateful_worker::StatefulWorker;
 use crate::AvailableDetector;
 // Sui specific imports
+#[cfg(feature = "aptos")]
+use crate::mutator::aptos_mutator::AptosMutator;
+#[cfg(feature = "sui")]
 use crate::mutator::sui_mutator::SuiMutator;
 use crate::worker::worker::Worker;
 use crate::worker::worker::WorkerEvent;
 use crate::worker::stateless_worker::StatelessWorker;
+#[cfg(feature = "sui")]
 use crate::runner::stateful_runner::sui_runner::SuiRunner as StatefulSuiRunner;
+#[cfg(feature = "sui")]
 use crate::runner::stateless_runner::sui_runner::SuiRunner as StatelessSuiRunner;
+#[cfg(feature = "aptos")]
+use crate::runner::stateful_runner::aptos_runner::AptosRunner as StatefulAptosRunner;
+#[cfg(feature = "aptos")]
+use crate::runner::stateless_runner::aptos_runner::StatelessAptosRunner;
+use crate::runner::chain::Chain;
 use super::crash::Crash;
+#[cfg(feature = "aptos")]
+use std::fs::OpenOptions;
 use super::fuzzer_utils::load_corpus;
 use super::fuzzer_utils::load_crashes;
 use super::fuzzer_utils::write_corpusfile;
 use super::fuzzer_utils::write_crashfile;
+use move_package::compilation::compiled_package::CompiledPackage;
+use move_package::compilation::compiled_package::CompiledUnitWithSource;
 
 pub struct Fuzzer {
     // Fuzzer configuration
@@ -105,6 +128,7 @@ impl Fuzzer {
         } else {
             None
         };
+        // corpus - A set of interesting test inputs (Not used in the context of sui stateful fuzzer)
         let coverage_set = load_corpus(&config.corpus_dir).unwrap_or_default();
         let unique_crashes_set = load_crashes(&config.crashes_dir).unwrap_or_default();
         Fuzzer {
@@ -126,6 +150,15 @@ impl Fuzzer {
     }
 
     fn start_stateless_threads(&mut self) {
+        #[cfg(feature = "aptos")]
+        let trace_log = self.config.aptos_trace_log.as_ref().map(|path| {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap_or_else(|e| panic!("Unable to open aptos trace log {}: {}", path, e));
+            Arc::new(Mutex::new(file))
+        });
         for i in 0..self.config.nb_threads {
             // Creates the communication channel for the fuzzer and worker sides
             let (fuzzer, worker) = bichannel::channel::<WorkerEvent, WorkerEvent>();
@@ -134,40 +167,83 @@ impl Fuzzer {
             self.threads_stats.push(stats.clone());
             // Change here the runner you want to create
             if let Some(parameter) = &self.config.contract {
-                // Creates the sui runner with the runner parameter found in the config
-                let runner = Box::new(StatelessSuiRunner::new(
+                // Chain is determined at compile time
+                #[cfg(feature = "sui")]
+                let chain = Chain::Sui;
+                #[cfg(feature = "aptos")]
+                let chain = Chain::Aptos;
+                let seed = self.config.seed.unwrap() + (i as u64);
+                let runner: Box<dyn Runner> = match chain {
+                    #[cfg(feature = "sui")]
+                    Chain::Sui => Box::new(StatelessSuiRunner::new(
                         &parameter.clone(),
                         &self.target_module,
                         &self.target_function.clone().unwrap(),
-                    ));
+                    )),
+                    #[cfg(feature = "aptos")]
+                    Chain::Aptos => {
+                        let (metadata, modules) = Self::build_test_modules(
+                            self.config.contract.as_ref().unwrap()
+                        );
+
+                        Box::new(StatelessAptosRunner::new(
+                            self.config.contract.as_ref().unwrap(),
+                            &self.target_module,
+                            &self.target_function.clone().unwrap(),
+                            metadata,
+                            modules,
+                            seed,
+                            self.config.aptos_helpers.clone(),
+                            trace_log.clone(),
+                        ))
+                    },
+                    #[cfg(not(feature = "sui"))]
+                    Chain::Sui => unreachable!("Sui feature not enabled"),
+                    #[cfg(not(feature = "aptos"))]
+                    Chain::Aptos => unreachable!("Aptos feature not enabled"),
+                };
                 self.target_parameters = runner.get_target_parameters();
                 self.max_coverage = runner.get_max_coverage();
-                // Increment seed so that each worker doesn't do the same thing
-                let seed = self.config.seed.unwrap() + (i as u64);
                 let execs_before_cov_update = self.config.execs_before_cov_update;
-                let mutator = Box::new(SuiMutator::new(seed, 12));
+                let mutator = match chain {
+                    #[cfg(feature = "sui")]
+                    Chain::Sui => Box::new(SuiMutator::new(seed, 12)),
+                    #[cfg(feature = "aptos")]
+                    Chain::Aptos => Box::new(AptosMutator::new(seed, 12)),
+                    #[cfg(not(feature = "sui"))]
+                    Chain::Sui => unreachable!("Sui feature not enabled"),
+                    #[cfg(not(feature = "aptos"))]
+                    Chain::Aptos => unreachable!("Aptos feature not enabled"),
+                };
                 let detectors = self.detectors.clone();
                 let coverage_set = self.coverage_set.clone();
                 let _ = std::thread::Builder::new()
                     .name(format!("Worker {}", i).to_string())
                     .spawn(move || {
-                        // Creates generic worker and starts it
-                        let mut w = Box::new(StatelessWorker::new(
-                                worker,
-                                stats,
-                                coverage_set,
-                                runner,
-                                mutator,
-                                seed,
-                                execs_before_cov_update,
-                                detectors,
-                            ));
-                        w.run();
+                        // Install panic hook for this thread
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            // Creates generic worker and starts it
+                            let mut w = Box::new(StatelessWorker::new(
+                                    worker,
+                                    stats,
+                                    coverage_set,
+                                    runner,
+                                    mutator,
+                                    seed,
+                                    execs_before_cov_update,
+                                    detectors,
+                                ));
+                            w.run();
+                        }));
+                        if let Err(e) = result {
+                            eprintln!("Worker thread panicked: {:?}", e);
+                        }
                     });
             }
         }
     }
 
+    #[cfg(feature = "sui")]
     fn build_test_modules(test_dir: &str) -> (Vec<u8>, Vec<Vec<u8>>) {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.extend([test_dir]);
@@ -179,10 +255,77 @@ impl Fuzzer {
             package.get_package_bytes(with_unpublished_deps),
         )
     }
+    #[cfg(feature = "aptos")]
+    fn build_test_modules(test_dir: &str) -> (Vec<u8>, Vec<Vec<u8>>) {
+        // Locate to contract source files
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push(test_dir);
 
+        println!("Attempting to compile package at: {:?}", path);
+
+        // Check if path exists
+        if !path.exists() {
+            eprintln!("ERROR: Contract path does not exist: {:?}", path);
+            eprintln!("Please check your config file's 'contract' field");
+            std::process::exit(1);
+        }
+
+        println!("Starting compilation with BuiltPackage...");
+
+        // Use BuiltPackage to compile with proper runtime metadata injection
+        // This handles resource_group attributes and other Aptos-specific metadata
+        let build_options = BuildOptions {
+            dev: false,
+            with_srcs: false,
+            with_abis: false,
+            with_source_maps: false,
+            with_error_map: false,
+            with_docs: false,
+            install_dir: None,
+            named_addresses: std::collections::BTreeMap::new(),
+            override_std: None,
+            docgen_options: None,
+            skip_fetch_latest_git_deps: false,
+            bytecode_version: None,
+            compiler_version: Some(move_model::metadata::CompilerVersion::V2_1),
+            language_version: Some(move_model::metadata::LanguageVersion::V2_1),
+            skip_attribute_checks: false,
+            check_test_code: false,
+            known_attributes: aptos_framework::extended_checks::get_all_attribute_names().clone(),
+            experiments: vec![],
+        };
+
+        let built_package = match BuiltPackage::build(path.clone(), build_options) {
+            Ok(pkg) => {
+                println!("Compilation successful!");
+                pkg
+            }
+            Err(e) => {
+                eprintln!("\n=== COMPILATION FAILED ===");
+                eprintln!("Error: {:?}", e);
+                eprintln!("\nPlease fix the compilation errors in your Move package before fuzzing.");
+                std::process::exit(1);
+            }
+        };
+
+        let metadata = bcs::to_bytes(
+            &built_package.extract_metadata().expect("extract metadata"),
+        )
+        .expect("serialize metadata");
+        let modules = built_package.extract_code();
+
+        println!("Extracted {} module(s) with runtime metadata", modules.len());
+        (metadata, modules)
+    }
     fn start_stateful_threads(&mut self) {
 
+        #[cfg(feature = "sui")]
         let (_, modules) = Self::build_test_modules(self.config.contract.as_ref().unwrap());
+        /*
+          compiles Move contracts from source code and returns bytecode in modules
+         */
+        #[cfg(feature = "aptos")]
+        let (metadata, modules) = Self::build_test_modules(self.config.contract.as_ref().unwrap());
 
         for i in 0..self.config.nb_threads {
             // Creates the communication channel for the fuzzer and worker sides
@@ -191,15 +334,45 @@ impl Fuzzer {
             let stats = Arc::new(RwLock::new(Stats::new()));
             self.threads_stats.push(stats.clone());
             // Change here the runner you want to create
-            let runner = Box::new(StatefulSuiRunner::new(
+            // Chain is determined at compile time
+            #[cfg(feature = "sui")]
+            let chain = Chain::Sui;
+            #[cfg(feature = "aptos")]
+            let chain = Chain::Aptos;
+            let seed = self.config.seed.unwrap() + (i as u64);
+            let runner: Box<dyn crate::runner::runner::StatefulRunner> = match chain {
+                #[cfg(feature = "sui")]
+                Chain::Sui => Box::new(StatefulSuiRunner::new(
                     &self.target_module,
                     modules.clone(),
-                ));
+                )),
+                #[cfg(feature = "aptos")]
+                Chain::Aptos => {
+                    Box::new(StatefulAptosRunner::new(
+                        &self.target_module,
+                        metadata.clone(),
+                        modules.clone(),
+                        seed,
+                        self.config.aptos_helpers.clone(),
+                    ))
+                },
+                #[cfg(not(feature = "sui"))]
+                Chain::Sui => unreachable!("Sui feature not enabled"),
+                #[cfg(not(feature = "aptos"))]
+                Chain::Aptos => unreachable!("Aptos feature not enabled"),
+            };
             self.max_coverage = runner.get_max_coverage();
-            // Increment seed so that each worker doesn't do the same thing
-            let seed = self.config.seed.unwrap() + (i as u64);
             let execs_before_cov_update = self.config.execs_before_cov_update;
-            let mutator = Box::new(SuiMutator::new(seed, 12));
+            let mutator = match chain {
+                #[cfg(feature = "sui")]
+                Chain::Sui => Box::new(SuiMutator::new(seed, 12)),
+                #[cfg(feature = "aptos")]
+                Chain::Aptos => Box::new(AptosMutator::new(seed, 12)),
+                #[cfg(not(feature = "sui"))]
+                Chain::Sui => unreachable!("Sui feature not enabled"),
+                #[cfg(not(feature = "aptos"))]
+                Chain::Aptos => unreachable!("Aptos feature not enabled"),
+            };
             let detectors = self.detectors.clone();
             let coverage_set = self.coverage_set.clone();
             let target_module = self.target_module.clone();
@@ -418,7 +591,9 @@ impl Fuzzer {
                         }
                     }
                 }
-                if self.global_stats.execs % 100000 == 0 {
+                // Print status every configured exec interval
+                let status_interval = self.config.execs_before_status_print;
+                if status_interval > 0 && self.global_stats.execs % status_interval == 0 {
                     println!("{}s running time | {} execs/s | total execs: {} | crashes: {} | unique crashes: {} | coverage: {}", 
                     self.global_stats.time_running, 
                     self.global_stats.execs_per_sec, 
