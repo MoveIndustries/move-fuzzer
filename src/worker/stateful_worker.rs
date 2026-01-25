@@ -226,6 +226,7 @@ pub struct StatefulWorker {
     target_functions: Vec<FuzzerType>,
     fuzz_functions: Vec<FuzzerType>,
     max_call_sequence_size: u32,
+    detectors: Option<Vec<AvailableDetector>>,
 }
 
 impl StatefulWorker {
@@ -238,7 +239,7 @@ impl StatefulWorker {
         mutator: Box<dyn Mutator>,
         seed: u64,
         _execs_before_cov_update: u64,
-        _available_detectors: Option<Vec<AvailableDetector>>,
+        available_detectors: Option<Vec<AvailableDetector>>,
         target_module: &str,
         target_functions: Vec<String>,
         fuzz_prefix: String,
@@ -295,6 +296,7 @@ impl StatefulWorker {
             fuzz_functions: fuzz_functions,
             unique_crashes_set: HashSet::new(),
             max_call_sequence_size,
+            detectors: available_detectors,
         }
     }
 
@@ -327,7 +329,6 @@ impl StatefulWorker {
         call_sequence
     }
 
-
 }
 
 impl Worker for StatefulWorker {
@@ -358,8 +359,6 @@ impl Worker for StatefulWorker {
 
                 //eprintln!("{} {:?}", function.as_function().unwrap().0, inputs);
 
-                let exec_result = self.runner.execute(inputs.clone());
-
                 self.stats.write().unwrap().execs += 1;
 
                 // Calculate execs_per_sec
@@ -371,34 +370,61 @@ impl Worker for StatefulWorker {
                     self.stats.write().unwrap().execs_per_sec = tmp / sec_elapsed;
                 }
 
-                match exec_result {
-                    Ok((_cov, gas_used)) => {
-                        /*
-                          Update gas usage when execution successes
-                         */
-                        self.stats.write().unwrap().update_gas_usage(&function, gas_used);
-                    },
-                    Err((_cov, error)) => {
-                        self.stats.write().unwrap().crashes += 1;
-                        let crash = Crash::new(
-                            &self.runner.get_target_module(),
-                            &self.runner.get_target_function().as_function().unwrap().0,
-                            &inputs,
-                            &error,
-                        );
-                        if !self.unique_crashes_set.contains(&crash) {
-                            self.channel
-                                .send(WorkerEvent::NewCrash(
-                                    self.runner
-                                        .get_target_function()
-                                        .as_function()
-                                        .unwrap()
-                                        .0
-                                        .to_string(),
-                                    inputs.clone(),
-                                    error,
-                                ))
-                                .unwrap();
+                if let Some(gas_runner) = self.runner.as_gas_runner() {
+                    match gas_runner.execute_with_gas(inputs.clone()) {
+                        Ok((_cov, gas_used)) => {
+                            // Update gas usage when execution succeeds
+                            self.stats.write().unwrap().update_gas_usage(&function, gas_used);
+                        }
+                        Err((_cov, error)) => {
+                            self.stats.write().unwrap().crashes += 1;
+                            let crash = Crash::new(
+                                &self.runner.get_target_module(),
+                                &self.runner.get_target_function().as_function().unwrap().0,
+                                &inputs,
+                                &error,
+                            );
+                            if !self.unique_crashes_set.contains(&crash) {
+                                self.channel
+                                    .send(WorkerEvent::NewCrash(
+                                        self.runner
+                                            .get_target_function()
+                                            .as_function()
+                                            .unwrap()
+                                            .0
+                                            .to_string(),
+                                        inputs.clone(),
+                                        error,
+                                    ))
+                                    .unwrap();
+                            }
+                        }
+                    }
+                } else {
+                    match self.runner.execute(inputs.clone()) {
+                        Ok(_cov) => {}
+                        Err((_cov, error)) => {
+                            self.stats.write().unwrap().crashes += 1;
+                            let crash = Crash::new(
+                                &self.runner.get_target_module(),
+                                &self.runner.get_target_function().as_function().unwrap().0,
+                                &inputs,
+                                &error,
+                            );
+                            if !self.unique_crashes_set.contains(&crash) {
+                                self.channel
+                                    .send(WorkerEvent::NewCrash(
+                                        self.runner
+                                            .get_target_function()
+                                            .as_function()
+                                            .unwrap()
+                                            .0
+                                            .to_string(),
+                                        inputs.clone(),
+                                        error,
+                                    ))
+                                    .unwrap();
+                            }
                         }
                     }
                 }
