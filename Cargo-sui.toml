@@ -46,3 +46,8 @@ tokio = { version = "1.2", features = ["full"] }
 tokio-core = "0.1.18"
 enum-as-inner = "0.6.0"
 rand = "0.8.5"
+
+[features]
+default = ["sui"]
+sui = []
+aptos = []

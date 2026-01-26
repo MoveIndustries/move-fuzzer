@@ -30,6 +30,7 @@ move-binary-format = { path = "./aptos-core/third_party/move/move-binary-format"
 libsecp256k1 = "0.7.0"
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 anyhow = "1.0"
+libc = "0.2"
 
 # Aptos dependencies
 aptos-language-e2e-tests = { path = "./aptos-core/aptos-move/e2e-tests" }
@@ -52,6 +53,7 @@ aptos-cached-packages = {path = "./aptos-core/aptos-move/framework/cached-packag
 [features]
 default = ["aptos"]
 aptos = []
+sui = []
 
 [patch.crates-io]
 merlin = { git = "https://github.com/aptos-labs/merlin" }
