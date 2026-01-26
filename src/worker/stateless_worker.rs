@@ -149,23 +149,23 @@ impl Worker for StatelessWorker {
                         if !self.coverage_set.contains(&coverage) {
                             self.coverage_set.insert(coverage);
                             self.stats.write().unwrap().secs_since_last_cov = 0;
-                            // Might be wrong location for this (maybe outside the if)
-                            let crash = Crash::new(
-                                &self.runner.get_target_module(),
-                                &self.runner.get_target_function().as_function().unwrap().0,
-                                &inputs,
-                                &error,
-                            );
-                            if !self.unique_crashes_set.contains(&crash) {
-                                self.channel
-                                    .send(WorkerEvent::NewCrash(
-                                        self.runner.get_target_function().as_function().unwrap().0.to_string(),
-                                        inputs.clone(),
-                                        error,
-                                    ))
-                                    .unwrap();
-                            }
                         }
+                    }
+                    let crash = Crash::new(
+                        &self.runner.get_target_module(),
+                        &self.runner.get_target_function().as_function().unwrap().0,
+                        &inputs,
+                        &error,
+                    );
+                    if !self.unique_crashes_set.contains(&crash) {
+                        self.channel
+                            .send(WorkerEvent::NewCrash(
+                                self.runner.get_target_function().as_function().unwrap().0.to_string(),
+                                inputs.clone(),
+                                error,
+                                None,
+                            ))
+                            .unwrap();
                     }
                     self.stats.write().unwrap().crashes += 1;
                 }

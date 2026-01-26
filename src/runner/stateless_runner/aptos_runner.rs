@@ -434,33 +434,36 @@ impl GasRunner for StatelessAptosRunner {
 
         // Execute transaction
         match self.send_transaction(&function_name, args) {
-            Ok((status, gas_used)) => {
-                match &status {
-                    TransactionStatus::Keep(exec_status) => {
-                        self.log_line(&format!(
-                            "  -> OK (gas: {}, status: {:?})",
-                            gas_used, exec_status
-                        ));
+            Ok((status, gas_used)) => match &status {
+                TransactionStatus::Keep(exec_status) => match exec_status {
+                    ExecutionStatus::Success => {
+                        self.log_line(&format!("  -> SUCCESS (gas: {})", gas_used));
                         Ok((None, gas_used))
-                    },
-                    TransactionStatus::Discard(status_code) => {
-                        self.log_line(&format!("  -> DISCARDED: {:?}", status_code));
+                    }
+                    _ => {
+                        self.log_line(&format!("  -> FAILURE: {:?} (gas: {})", exec_status, gas_used));
                         Err((None, Error::Unknown {
-                            message: format!("Transaction discarded: {:?}", status_code),
-                        }))
-                    },
-                    TransactionStatus::Retry => {
-                        self.log_line("  -> RETRY");
-                        Err((None, Error::Unknown {
-                            message: "Transaction retry requested".to_string(),
+                            message: format!("{:?}", exec_status),
                         }))
                     }
+                },
+                TransactionStatus::Discard(status_code) => {
+                    self.log_line(&format!("  -> DISCARDED: {:?}", status_code));
+                    Err((None, Error::Unknown {
+                        message: format!("Transaction discarded: {:?}", status_code),
+                    }))
+                }
+                TransactionStatus::Retry => {
+                    self.log_line("  -> RETRY");
+                    Err((None, Error::Unknown {
+                        message: "Transaction retry requested".to_string(),
+                    }))
                 }
             },
             Err(e) => {
                 self.log_line(&format!("  -> ERROR: {:?}", e));
                 Err((None, e))
-            },
+            }
         }
     }
 

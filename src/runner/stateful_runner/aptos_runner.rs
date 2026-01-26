@@ -300,7 +300,13 @@ impl GasRunner for AptosRunner {
 
         match response {
             Ok((status, gas_used)) => match status {
-                TransactionStatus::Keep(_) => Ok((None, gas_used)),
+                TransactionStatus::Keep(ExecutionStatus::Success) => Ok((None, gas_used)),
+                TransactionStatus::Keep(exec_status) => Err((
+                    None,
+                    Error::Unknown {
+                        message: format!("{:?}", exec_status),
+                    },
+                )),
                 TransactionStatus::Discard(_) => Err((
                     None,
                     Error::Unknown {

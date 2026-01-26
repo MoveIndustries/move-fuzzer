@@ -1,5 +1,7 @@
 use std::{
     collections::HashSet,
+    fs::File,
+    io::Write,
     sync::{Arc, RwLock},
     time::Instant,
 };
@@ -7,9 +9,9 @@ use std::{
 use bichannel::Channel;
 #[cfg(feature = "sui")]
 use move_model::ty::Type;
+#[cfg(feature = "aptos")]
 use move_model::metadata::{CompilerVersion, LanguageVersion};
 use rand::{seq::SliceRandom, thread_rng};
-use ark_std::iterable::Iterable;
 use crate::{
     detector::detector::AvailableDetector,
     fuzzer::{coverage::Coverage, crash::Crash, stats::Stats},
@@ -227,6 +229,7 @@ pub struct StatefulWorker {
     fuzz_functions: Vec<FuzzerType>,
     max_call_sequence_size: u32,
     detectors: Option<Vec<AvailableDetector>>,
+    trace_log: Option<Arc<std::sync::Mutex<File>>>,
 }
 
 impl StatefulWorker {
@@ -244,6 +247,7 @@ impl StatefulWorker {
         target_functions: Vec<String>,
         fuzz_prefix: String,
         max_call_sequence_size: u32,
+        trace_log: Option<Arc<std::sync::Mutex<File>>>,
     ) -> Self {
         // Gets info on targeted functions
         let mut functions = vec![];
@@ -297,6 +301,7 @@ impl StatefulWorker {
             unique_crashes_set: HashSet::new(),
             max_call_sequence_size,
             detectors: available_detectors,
+            trace_log,
         }
     }
 
@@ -329,6 +334,14 @@ impl StatefulWorker {
         call_sequence
     }
 
+    fn log_line(&self, line: &str) {
+        if let Some(trace_log) = &self.trace_log {
+            if let Ok(mut file) = trace_log.lock() {
+                let _ = writeln!(file, "{}", line);
+            }
+        }
+    }
+
 }
 
 impl Worker for StatefulWorker {
@@ -344,9 +357,17 @@ impl Worker for StatefulWorker {
                 .try_into()
                 .unwrap();
             let call_sequence = self.generate_call_sequence(call_sequence_size);
+            let call_sequence_names: Vec<String> = call_sequence
+                .iter()
+                .filter_map(|f| f.as_function().map(|(name, _, _)| name))
+                .map(|name| name.to_string())
+                .collect();
 
             // Call each function in the call sequence
             for function in call_sequence {
+                if let Some((name, _, _)) = function.as_function() {
+                    self.log_line(&format!("TRACE: {}::{}", self.runner.get_target_module(), name));
+                }
                 // Reset function
                 self.runner.set_target_function(&function);
 
@@ -383,7 +404,8 @@ impl Worker for StatefulWorker {
                                 &self.runner.get_target_function().as_function().unwrap().0,
                                 &inputs,
                                 &error,
-                            );
+                            )
+                            .with_call_sequence(call_sequence_names.clone());
                             if !self.unique_crashes_set.contains(&crash) {
                                 self.channel
                                     .send(WorkerEvent::NewCrash(
@@ -395,6 +417,7 @@ impl Worker for StatefulWorker {
                                             .to_string(),
                                         inputs.clone(),
                                         error,
+                                        Some(call_sequence_names.clone()),
                                     ))
                                     .unwrap();
                             }
@@ -410,7 +433,8 @@ impl Worker for StatefulWorker {
                                 &self.runner.get_target_function().as_function().unwrap().0,
                                 &inputs,
                                 &error,
-                            );
+                            )
+                            .with_call_sequence(call_sequence_names.clone());
                             if !self.unique_crashes_set.contains(&crash) {
                                 self.channel
                                     .send(WorkerEvent::NewCrash(
@@ -422,6 +446,7 @@ impl Worker for StatefulWorker {
                                             .to_string(),
                                         inputs.clone(),
                                         error,
+                                        Some(call_sequence_names.clone()),
                                     ))
                                     .unwrap();
                             }
