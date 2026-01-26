@@ -31,6 +31,12 @@ pub struct Config {
     // Optional file path for Aptos stateless trace logs
     #[serde(default)]
     pub aptos_trace_log: Option<String>,
+    // Optional file path for Aptos stateful trace logs
+    #[serde(default)]
+    pub aptos_stateful_trace_log: Option<String>,
+    // Optional file path for Aptos package build logs
+    #[serde(default)]
+    pub aptos_build_log: Option<String>,
 }
 
 fn default_status_print_interval() -> u64 {
@@ -53,6 +59,8 @@ impl Config {
             max_call_sequence_size: 5,
             aptos_helpers: HashMap::new(),
             aptos_trace_log: None,
+            aptos_stateful_trace_log: None,
+            aptos_build_log: None,
         }
     }
 

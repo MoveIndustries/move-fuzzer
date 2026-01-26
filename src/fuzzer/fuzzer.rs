@@ -45,6 +45,7 @@ use crate::runner::chain::Chain;
 use super::crash::Crash;
 #[cfg(feature = "aptos")]
 use std::fs::OpenOptions;
+use std::io::Write;
 use super::fuzzer_utils::load_corpus;
 use super::fuzzer_utils::load_crashes;
 use super::fuzzer_utils::write_corpusfile;
@@ -154,7 +155,8 @@ impl Fuzzer {
         let trace_log = self.config.aptos_trace_log.as_ref().map(|path| {
             let file = OpenOptions::new()
                 .create(true)
-                .append(true)
+                .write(true)
+                .truncate(true)
                 .open(path)
                 .unwrap_or_else(|e| panic!("Unable to open aptos trace log {}: {}", path, e));
             Arc::new(Mutex::new(file))
@@ -183,7 +185,8 @@ impl Fuzzer {
                     #[cfg(feature = "aptos")]
                     Chain::Aptos => {
                         let (metadata, modules) = Self::build_test_modules(
-                            self.config.contract.as_ref().unwrap()
+                            self.config.contract.as_ref().unwrap(),
+                            self.config.aptos_build_log.as_deref(),
                         );
 
                         Box::new(StatelessAptosRunner::new(
@@ -255,22 +258,22 @@ impl Fuzzer {
             package.get_package_bytes(with_unpublished_deps),
         )
     }
-    #[cfg(feature = "aptos")]
-    fn build_test_modules(test_dir: &str) -> (Vec<u8>, Vec<Vec<u8>>) {
-        // Locate to contract source files
-        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push(test_dir);
+#[cfg(feature = "aptos")]
+fn build_test_modules(test_dir: &str, build_log: Option<&str>) -> (Vec<u8>, Vec<Vec<u8>>) {
+    // Locate to contract source files
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push(test_dir);
 
-        println!("Attempting to compile package at: {:?}", path);
+    log_build(build_log, &format!("Attempting to compile package at: {:?}", path));
 
         // Check if path exists
-        if !path.exists() {
-            eprintln!("ERROR: Contract path does not exist: {:?}", path);
-            eprintln!("Please check your config file's 'contract' field");
-            std::process::exit(1);
-        }
+    if !path.exists() {
+        log_build(build_log, &format!("ERROR: Contract path does not exist: {:?}", path));
+        log_build(build_log, "Please check your config file's 'contract' field");
+        std::process::exit(1);
+    }
 
-        println!("Starting compilation with BuiltPackage...");
+    log_build(build_log, "Starting compilation with BuiltPackage...");
 
         // Use BuiltPackage to compile with proper runtime metadata injection
         // This handles resource_group attributes and other Aptos-specific metadata
@@ -295,15 +298,26 @@ impl Fuzzer {
             experiments: vec![],
         };
 
-        let built_package = match BuiltPackage::build(path.clone(), build_options) {
+        let build = || BuiltPackage::build(path.clone(), build_options);
+        let built_package = match build_log {
+            Some(path) => {
+                match redirect_build_output(path, build) {
+                    Ok(pkg) => Ok(pkg),
+                    Err(e) => Err(e),
+                }
+            }
+            None => build(),
+        };
+
+        let built_package = match built_package {
             Ok(pkg) => {
-                println!("Compilation successful!");
+                log_build(build_log, "Compilation successful!");
                 pkg
             }
             Err(e) => {
-                eprintln!("\n=== COMPILATION FAILED ===");
-                eprintln!("Error: {:?}", e);
-                eprintln!("\nPlease fix the compilation errors in your Move package before fuzzing.");
+                log_build(build_log, "=== COMPILATION FAILED ===");
+                log_build(build_log, &format!("Error: {:?}", e));
+                log_build(build_log, "Please fix the compilation errors in your Move package before fuzzing.");
                 std::process::exit(1);
             }
         };
@@ -314,9 +328,12 @@ impl Fuzzer {
         .expect("serialize metadata");
         let modules = built_package.extract_code();
 
-        println!("Extracted {} module(s) with runtime metadata", modules.len());
-        (metadata, modules)
-    }
+    log_build(
+        build_log,
+        &format!("Extracted {} module(s) with runtime metadata", modules.len()),
+    );
+    (metadata, modules)
+}
     fn start_stateful_threads(&mut self) {
 
         #[cfg(feature = "sui")]
@@ -325,7 +342,23 @@ impl Fuzzer {
           compiles Move contracts from source code and returns bytecode in modules
          */
         #[cfg(feature = "aptos")]
-        let (metadata, modules) = Self::build_test_modules(self.config.contract.as_ref().unwrap());
+        let (metadata, modules) = Self::build_test_modules(
+            self.config.contract.as_ref().unwrap(),
+            self.config.aptos_build_log.as_deref(),
+        );
+
+        #[cfg(feature = "aptos")]
+        let stateful_trace_log = self.config.aptos_stateful_trace_log.as_ref().map(|path| {
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)
+                .unwrap_or_else(|e| panic!("Unable to open aptos stateful trace log {}: {}", path, e));
+            Arc::new(Mutex::new(file))
+        });
+        #[cfg(not(feature = "aptos"))]
+        let stateful_trace_log = None;
 
         for i in 0..self.config.nb_threads {
             // Creates the communication channel for the fuzzer and worker sides
@@ -380,25 +413,27 @@ impl Fuzzer {
             let fuzz_prefix = self.config.fuzz_functions_prefix .clone();
             let contract = self.config.contract.clone().unwrap();
             let max_call_sequence_size = self.config.max_call_sequence_size;
+            let trace_log_for_thread = stateful_trace_log.clone();
             let _ = std::thread::Builder::new()
                 .name(format!("Worker {}", i).to_string())
                 .spawn(move || {
                     // Creates generic worker and starts it
                     let mut w = Box::new(StatefulWorker::new(
-                            &contract,
-                            worker,
-                            stats,
-                            coverage_set,
-                            runner,
-                            mutator,
-                            execs_before_cov_update,
-                            seed,
-                            detectors,
-                            &target_module,
-                            target_functions,
-                            fuzz_prefix,
-                            max_call_sequence_size
-                        ));
+                        &contract,
+                        worker,
+                        stats,
+                        coverage_set,
+                        runner,
+                        mutator,
+                        execs_before_cov_update,
+                        seed,
+                        detectors,
+                        &target_module,
+                        target_functions,
+                        fuzz_prefix,
+                        max_call_sequence_size,
+                        trace_log_for_thread,
+                    ));
                     w.run();
                 });
             }
@@ -526,8 +561,11 @@ impl Fuzzer {
                                 }
                             }
                         }
-                        WorkerEvent::NewCrash(target_function, inputs, error) => {
-                            let crash = Crash::new(&self.target_module, &target_function, &inputs, &error);
+                        WorkerEvent::NewCrash(target_function, inputs, error, call_sequence) => {
+                            let mut crash = Crash::new(&self.target_module, &target_function, &inputs, &error);
+                            if let Some(seq) = call_sequence {
+                                crash = crash.with_call_sequence(seq);
+                            }
                             let mut message = format!("{} - already exists, skipping", Parameters(inputs.clone()));
                             if !self.unique_crashes_set.contains(&crash) {
                                 write_crashfile(&self.config.crashes_dir, crash.clone());
@@ -593,7 +631,10 @@ impl Fuzzer {
                 }
                 // Print status every configured exec interval
                 let status_interval = self.config.execs_before_status_print;
-                if status_interval > 0 && self.global_stats.execs % status_interval == 0 {
+                if status_interval > 0
+                    && self.global_stats.execs > 0
+                    && self.global_stats.execs % status_interval == 0
+                {
                     println!("{}s running time | {} execs/s | total execs: {} | crashes: {} | unique crashes: {} | coverage: {}", 
                     self.global_stats.time_running, 
                     self.global_stats.execs_per_sec, 
@@ -605,5 +646,46 @@ impl Fuzzer {
                 events.clear();
             }
         }
+    }
+}
+
+#[cfg(feature = "aptos")]
+fn redirect_build_output<F, T>(path: &str, f: F) -> Result<T, anyhow::Error>
+where
+    F: FnOnce() -> Result<T, anyhow::Error>,
+{
+    use std::fs::File;
+    use std::os::unix::io::AsRawFd;
+
+    let file = File::create(path)?;
+    let file_fd = file.as_raw_fd();
+    unsafe {
+        let stdout_fd = libc::dup(libc::STDOUT_FILENO);
+        let stderr_fd = libc::dup(libc::STDERR_FILENO);
+        if stdout_fd < 0 || stderr_fd < 0 {
+            return Err(anyhow::anyhow!("Failed to dup stdout/stderr"));
+        }
+        if libc::dup2(file_fd, libc::STDOUT_FILENO) < 0 || libc::dup2(file_fd, libc::STDERR_FILENO) < 0 {
+            libc::close(stdout_fd);
+            libc::close(stderr_fd);
+            return Err(anyhow::anyhow!("Failed to redirect stdout/stderr"));
+        }
+        let result = f();
+        libc::dup2(stdout_fd, libc::STDOUT_FILENO);
+        libc::dup2(stderr_fd, libc::STDERR_FILENO);
+        libc::close(stdout_fd);
+        libc::close(stderr_fd);
+        result
+    }
+}
+
+#[cfg(feature = "aptos")]
+fn log_build(build_log: Option<&str>, message: &str) {
+    if let Some(path) = build_log {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{}", message);
+        }
+    } else {
+        println!("{}", message);
     }
 }

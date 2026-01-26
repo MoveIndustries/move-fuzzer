@@ -113,7 +113,7 @@ impl Mutator for AptosMutator {
                     let mut v = self.mutator.input.clone();
                     v.resize(8, 0);
 
-                    Type::U64(u64::from_be_bytes(v[0..8].try_into().unwrap()) % 1000)
+                    Type::U64(u64::from_be_bytes(v[0..8].try_into().unwrap()))
                 }
                 Type::U128(_) => {
                     let mut v = self.mutator.input.clone();
