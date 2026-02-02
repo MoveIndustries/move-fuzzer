@@ -28,12 +28,9 @@ pub struct Config {
     // Optional Aptos helper mapping
     #[serde(default)]
     pub aptos_helpers: HashMap<String, String>,
-    // Optional file path for Aptos stateless trace logs
+    // Optional file path for Aptos trace logs (stateless and stateful)
     #[serde(default)]
     pub aptos_trace_log: Option<String>,
-    // Optional file path for Aptos stateful trace logs
-    #[serde(default)]
-    pub aptos_stateful_trace_log: Option<String>,
     // Optional file path for Aptos package build logs
     #[serde(default)]
     pub aptos_build_log: Option<String>,
@@ -59,7 +56,6 @@ impl Config {
             max_call_sequence_size: 5,
             aptos_helpers: HashMap::new(),
             aptos_trace_log: None,
-            aptos_stateful_trace_log: None,
             aptos_build_log: None,
         }
     }

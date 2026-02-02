@@ -126,7 +126,7 @@ fn generate_abi_from_source(
             .find(|f| f.get_name_str() == target_function);
         if let Some(f) = func {
 
-            let max_coverage = f.get_bytecode().len();
+            let max_coverage = f.get_bytecode().map(|b| b.len()).unwrap_or(0);
             let params = f
                 .get_parameters()
                 .iter()
@@ -365,9 +365,6 @@ impl Worker for StatefulWorker {
 
             // Call each function in the call sequence
             for function in call_sequence {
-                if let Some((name, _, _)) = function.as_function() {
-                    self.log_line(&format!("TRACE: {}::{}", self.runner.get_target_module(), name));
-                }
                 // Reset function
                 self.runner.set_target_function(&function);
 
@@ -378,7 +375,10 @@ impl Worker for StatefulWorker {
                 let current_gas = self.stats.read().unwrap().get_max_gas(&function);
                 inputs = self.mutator.mutate_with_gas(&inputs, 4, Some(current_gas));
 
-                //eprintln!("{} {:?}", function.as_function().unwrap().0, inputs);
+                // Log trace with inputs (after mutation)
+                if let Some((name, _, _)) = function.as_function() {
+                    self.log_line(&format!("TRACE: {}::{}({:?})", self.runner.get_target_module(), name, inputs));
+                }
 
                 self.stats.write().unwrap().execs += 1;
 
@@ -396,8 +396,10 @@ impl Worker for StatefulWorker {
                         Ok((_cov, gas_used)) => {
                             // Update gas usage when execution succeeds
                             self.stats.write().unwrap().update_gas_usage(&function, gas_used);
+                            self.log_line(&format!("  -> SUCCESS (gas: {})", gas_used));
                         }
                         Err((_cov, error)) => {
+                            self.log_line(&format!("  -> FAILURE: {:?}", error));
                             self.stats.write().unwrap().crashes += 1;
                             let crash = Crash::new(
                                 &self.runner.get_target_module(),

@@ -1,6 +1,6 @@
 {
-  "use_ui": false,
-  "nb_threads": 1, 
+  "use_ui": true,
+  "nb_threads": 1,
   "seed": 4242,
   "contract": "./examples/arithmetic_errors_package_aptos",
   "execs_before_cov_update": 10000,
@@ -11,5 +11,6 @@
   "max_call_sequence_size": 5,
   "aptos_helpers": {
 },
+  "aptos_build_log": "./aptos_stateless_build.log",
   "aptos_trace_log": "./aptos_stateless_trace.log"
 }

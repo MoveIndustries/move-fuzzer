@@ -97,12 +97,6 @@ impl StatelessAptosRunner {
             target_module,
             target_function,
         );
-        println!("Target function '{}' has {} parameters, max_coverage: {}",
-                 target_function, params.len(), max_coverage);
-        for (i, p) in params.iter().enumerate() {
-            println!("  param[{}]: {:?}", i, p);
-        }
-
         // Create target function type
         let target_function_type = FuzzerType::Function(
             target_function.to_string(),
@@ -146,7 +140,7 @@ impl StatelessAptosRunner {
             return;
         }
 
-        println!("Initializing FakeExecutor in worker thread...");
+        self.log_line("Initializing FakeExecutor in worker thread...");
 
         // Create FakeExecutor with genesis state (includes Aptos framework)
         let mut executor = FakeExecutor::from_head_genesis();
@@ -159,7 +153,7 @@ impl StatelessAptosRunner {
         };
         let package_address = *account.address();
 
-        println!("Created account at address: {:?}", package_address);
+        self.log_line(&format!("Created account at address: {:?}", package_address));
 
         // Track sequence number - publish uses 0
         let mut current_seq = 0u64;
@@ -173,28 +167,28 @@ impl StatelessAptosRunner {
             &self.package_metadata,
         ) {
             Ok(output) => {
-                println!("Module publishing result status: {:?}", output.status());
+                self.log_line(&format!("Module publishing result status: {:?}", output.status()));
                 match output.status() {
                     TransactionStatus::Keep(exec_status) => match exec_status {
                         ExecutionStatus::Success => {
-                            println!("Module publishing succeeded!");
+                            self.log_line("Module publishing succeeded!");
                             current_seq = 1;
                         }
                         _ => {
-                            eprintln!("Module publishing failed with execution status: {:?}", exec_status);
-                            eprintln!("Events: {:?}", output.events());
+                            self.log_line(&format!("Module publishing failed with execution status: {:?}", exec_status));
+                            self.log_line(&format!("Events: {:?}", output.events()));
                         }
                     },
                     TransactionStatus::Discard(status) => {
-                        eprintln!("Module publishing discarded: {:?}", status);
+                        self.log_line(&format!("Module publishing discarded: {:?}", status));
                     }
                     TransactionStatus::Retry => {
-                        eprintln!("Module publishing needs retry");
+                        self.log_line("Module publishing needs retry");
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Failed to publish modules: {:?}", e);
+                self.log_line(&format!("Warning: Failed to publish modules: {:?}", e));
             }
         }
 
@@ -213,9 +207,9 @@ impl StatelessAptosRunner {
                                 executor.apply_write_set(output.write_set());
                                 current_seq += 1;
                             }
-                            _ => eprintln!("initialize failed with status: {:?}", output.status()),
+                            _ => self.log_line(&format!("initialize failed with status: {:?}", output.status())),
                         },
-                        Err(e) => eprintln!("initialize failed: {:?}", e),
+                        Err(e) => self.log_line(&format!("initialize failed: {:?}", e)),
                     }
                 }
             }
@@ -230,23 +224,23 @@ impl StatelessAptosRunner {
             current_seq,
         ) {
             Ok(output) => {
-                println!("fuzz_init called successfully");
+                self.log_line("fuzz_init called successfully");
                 if is_kept(output.status()) {
                     current_seq += 1;
                 }
             }
-            Err(e) => eprintln!("Note: fuzz_init not found or failed (this is OK): {:?}", e),
+            Err(e) => self.log_line(&format!("Note: fuzz_init not found or failed (this is OK): {:?}", e)),
         }
 
         self.next_sequence_number = current_seq;
-        println!("Next sequence number for fuzzing: {}", current_seq);
+        self.log_line(&format!("Next sequence number for fuzzing: {}", current_seq));
 
         self.executor = Some(executor);
         self.account = Some(account);
         self.package_address = Some(package_address);
         self.initialized = true;
 
-        println!("FakeExecutor initialized successfully!");
+        self.log_line("FakeExecutor initialized successfully!");
     }
 
     fn publish_modules(

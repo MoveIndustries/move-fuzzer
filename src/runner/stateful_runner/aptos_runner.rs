@@ -24,6 +24,12 @@ use move_binary_format::{CompiledModule, access::ModuleAccess};
 #[cfg(feature = "aptos")]
 use std::collections::HashMap;
 #[cfg(feature = "aptos")]
+use std::fs::File;
+#[cfg(feature = "aptos")]
+use std::io::Write;
+#[cfg(feature = "aptos")]
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "aptos")]
 use crate::runner::aptos_helpers::registry::build_helpers;
 #[cfg(feature = "aptos")]
 use crate::runner::aptos_helpers::AptosHelper;
@@ -76,6 +82,7 @@ pub struct AptosRunner {
     sequence_number: u64,
     aptos_helpers: HashMap<String, String>,
     helper_instances: HashMap<String, Box<dyn AptosHelper>>,
+    trace_log: Option<Arc<Mutex<File>>>,
 }
 
 // Mark as Send - FakeExecutor is created and used within the same worker thread
@@ -110,12 +117,22 @@ impl AptosRunner {
         self.helper_instances.get(helper_name).map(|h| h.as_ref())
     }
 
+    fn log_line(&self, line: &str) {
+        if let Some(trace_log) = &self.trace_log {
+            if let Ok(mut file) = trace_log.lock() {
+                let _ = writeln!(file, "{}", line);
+                let _ = file.flush();
+            }
+        }
+    }
+
     pub fn new(
         target_module: &str,
         package_metadata: Vec<u8>,
         modules: Vec<Vec<u8>>,
         seed: u64,
         aptos_helpers: HashMap<String, String>,
+        trace_log: Option<Arc<Mutex<File>>>,
     ) -> Self {
         // Create executor with genesis state (includes framework modules, chain config, etc.)
         let executor = FakeExecutor::from_head_genesis();
@@ -133,6 +150,7 @@ impl AptosRunner {
             sequence_number: 0,
             aptos_helpers,
             helper_instances,
+            trace_log,
         };
 
         runner.setup();
@@ -371,6 +389,8 @@ impl Runner for AptosRunner {
 #[cfg(feature = "aptos")]
 impl StatefulRunner for AptosRunner {
     fn setup(&mut self) {
+        self.log_line("Initializing FakeExecutor in worker thread...");
+
         // Reset executor and sequence number for a clean state between sequences
         self.executor = FakeExecutor::from_head_genesis();
         self.sequence_number = 0;
@@ -386,10 +406,19 @@ impl StatefulRunner for AptosRunner {
 
         // Update package_address to the account's address (modules will be published here)
         self.package_address = *self.account.address();
+        self.log_line(&format!("Created account at address: {:?}", self.package_address));
 
         // Publish the fuzzing Move package
         if !self.modules.is_empty() {
-            self.publish_modules().expect("Failed to publish modules");
+            match self.publish_modules() {
+                Ok(_) => {
+                    self.log_line("Module publishing result status: Keep(Success)");
+                    self.log_line("Module publishing succeeded!");
+                }
+                Err(e) => {
+                    self.log_line(&format!("Module publishing failed: {:?}", e));
+                }
+            }
         }
 
         let admin_addr = *self.account.address();
@@ -403,7 +432,13 @@ impl StatefulRunner for AptosRunner {
         }
 
         // Run fuzz_init entry function if present in the module
-        let _ = self.send_transaction("fuzz_init", vec![]);
+        match self.send_transaction("fuzz_init", vec![]) {
+            Ok(_) => self.log_line("fuzz_init called successfully"),
+            Err(_) => self.log_line("Note: fuzz_init not found or failed (this is OK)"),
+        }
+
+        self.log_line(&format!("Next sequence number for fuzzing: {}", self.sequence_number));
+        self.log_line("FakeExecutor initialized successfully!");
     }
 }
 
