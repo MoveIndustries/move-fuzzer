@@ -92,8 +92,12 @@ impl Fuzzer {
         detectors: Option<&Vec<AvailableDetector>>,
     ) -> Self {
         let nb_threads = config.nb_threads;
+        #[cfg(feature = "aptos")]
+        let platform = "aptos";
+        #[cfg(feature = "sui")]
+        let platform = "sui";
         let ui = if config.use_ui {
-            Some(Ui::new(nb_threads, config.seed.unwrap()))
+            Some(Ui::new(nb_threads, config.seed.unwrap(), false, platform))
         } else {
             None
         };
@@ -124,8 +128,12 @@ impl Fuzzer {
         detectors: Option<&Vec<AvailableDetector>>,
     ) -> Self {
         let nb_threads = config.nb_threads;
+        #[cfg(feature = "aptos")]
+        let platform = "aptos";
+        #[cfg(feature = "sui")]
+        let platform = "sui";
         let ui = if config.use_ui {
-            Some(Ui::new(nb_threads, config.seed.unwrap()))
+            Some(Ui::new(nb_threads, config.seed.unwrap(), true, platform))
         } else {
             None
         };
@@ -348,13 +356,13 @@ fn build_test_modules(test_dir: &str, build_log: Option<&str>) -> (Vec<u8>, Vec<
         );
 
         #[cfg(feature = "aptos")]
-        let stateful_trace_log = self.config.aptos_stateful_trace_log.as_ref().map(|path| {
+        let stateful_trace_log = self.config.aptos_trace_log.as_ref().map(|path| {
             let file = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
                 .open(path)
-                .unwrap_or_else(|e| panic!("Unable to open aptos stateful trace log {}: {}", path, e));
+                .unwrap_or_else(|e| panic!("Unable to open aptos trace log {}: {}", path, e));
             Arc::new(Mutex::new(file))
         });
         #[cfg(not(feature = "aptos"))]
@@ -387,6 +395,7 @@ fn build_test_modules(test_dir: &str, build_log: Option<&str>) -> (Vec<u8>, Vec<
                         modules.clone(),
                         seed,
                         self.config.aptos_helpers.clone(),
+                        stateful_trace_log.clone(),
                     ))
                 },
                 #[cfg(not(feature = "sui"))]
@@ -685,7 +694,5 @@ fn log_build(build_log: Option<&str>, message: &str) {
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{}", message);
         }
-    } else {
-        println!("{}", message);
     }
 }
