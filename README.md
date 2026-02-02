@@ -1,5 +1,7 @@
 # The Move Fuzzer
 
+![Move Fuzzer Demo](demo.gif)
+
 A Move smart‑contract fuzzer targeting both Aptos and Sui dialects. Feedback mechanisms vary by runner (e.g., coverage in Sui stateless, gas‑informed mutation in Aptos stateful).
 This project is a fork of [sui-fuzzer](https://github.com/FuzzingLabs/sui-fuzzer), originally developed by [FuzzingLabs](https://fuzzinglabs.com/), and is distributed under the GNU Affero General Public License v3. This fork adds support for Aptos Move and positions the tool as a general Move fuzzer.
 
