@@ -58,7 +58,6 @@ impl Display for Type {
                 } else {
                     write!(f, "Struct([ ").unwrap();
                     for (i, t) in types.iter().enumerate() {
-                        eprintln!("{:?}", t);
                         write!(f, "{}", t).unwrap();
                         if i != types.len() - 1 {
                             write!(f, ", ").unwrap();
