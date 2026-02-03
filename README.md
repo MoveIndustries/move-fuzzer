@@ -1,84 +1,123 @@
-# Sui Fuzzer (WIP)
+# The Move Fuzzer
 
-Fuzzer for Sui Move Smart Contracts.
+![Move Fuzzer Demo](demo.gif)
 
-![screenshot](./doc/imgs/screenshot1.png)
+A Move smart‑contract fuzzer targeting both Aptos and Sui dialects. Feedback mechanisms vary by runner (e.g., coverage in Sui stateless, gas‑informed mutation in Aptos stateful).
+This project is a fork of [sui-fuzzer](https://github.com/FuzzingLabs/sui-fuzzer), originally developed by [FuzzingLabs](https://fuzzinglabs.com/), and is distributed under the GNU Affero General Public License v3. This fork adds support for Aptos Move and positions the tool as a general Move fuzzer.
 
-## Milestones
 
-### Milestone 1: Discovery & project architecture
-- [x] Testing and analysis of Sui Move and VM internals 
-- [x] Development of the project base (architecture and command line interface)
-- [x] Tutorial for project installation and testing
-- [x] Identification of arguments and contracts execution requirements
-- [x] Creation MVP
+## Dependencies
 
-### Milestone 2: Fuzzer improvements
-- [x] Improvement of the project (threading, runtimes perf monitoring)
-- [x] Implementation of coverage-guided fuzzing
-- [x] Implementation of vulnerability detectors
-- [x] Add support for property testing methods
-- [x] Docker and packaging of the fuzzer as a library
-- [x] Tutorial for running fuzzers and using advanced CLI options
+Depending on the target chain, the fuzzer depends on either `aptos-core` or `sui`.
 
-### Milestone 3: Fuzzer finalization
-- [x] Generation of sequences of calls (stateful fuzzing)
-- [x] Improvement of contract argument generation (based on )
-- [x] Improvement of command line options
-- [x] Improvement of the fuzzing (input file sharing, mutation algorithm, speed)
-- [x] Create more documentation & tutorials against basic/example contracts
+**Aptos**
+- `aptos-core` submodule: used as the authoritative source for the Aptos Move framework, VM, executor, and Move tooling (`move-package`, `move-binary-format`, model builder, etc.). Submodule URL: `https://github.com/movementlabsxyz/aptos-core.git` (branch: `l1-migration`).
+
+**Sui**
+- `sui` submodule: provides the Sui Move framework, Sui‑specific VM/runtime components, and tooling used by the Sui runners. Submodule URL: `https://github.com/FuzzingLabs/sui.git`.
 
 ## Usage
 
-You need to clone the repository with the submodules using the following command:
+Clone the repository with submodules:
 
 ```bash
-$ git clone --recursive git@github.com:FuzzingLabs/sui-fuzzer.git
-```
-#### In stateless
-
-To run the fuzzer just use (with rust and cargo installed):
-
-```bash
-$ make CONFIG_PATH="./config.json" TARGET_MODULE="fuzzinglabs_module" TARGET_FUNCTION="fuzzinglabs"
+git clone --recurse-submodules https://github.com/MoveIndustries/move-fuzzer.git
 ```
 
-You need to have a compiled SuiMove module path in the *contract* item in the config.
+#### Build
 
-#### In stateful
+- Aptos (default feature):  
+  ```bash
+  ./build-aptos.sh
+  ```
+- Sui: 
+  ```bash
+  ./build-sui.sh
+  ```
+
+#### Run
+
+- Aptos stateless example:  
+  ```bash
+  cargo run --release --features aptos -- \
+    --config-path ./config_aptos_stateless.json \
+    --target-module arithmetic_errors_module \
+    --target-function fuzz_u64_overflow
+  ```
+- Aptos stateful example:  
+  ```bash
+  cargo run --release --features aptos -- \
+    --config-path ./config_aptos_stateful.json \
+    --target-module calculator_module \
+    --functions add,sub
+  ```
+- Sui stateless example:  
+  ```bash
+  cargo run --release --features sui -- \
+    --config-path ./config_sui_stateless.json \
+    --target-module fuzzinglabs_module \
+    --target-function fuzzinglabs
+  ```
+- Sui stateful example:  
+  ```bash
+  cargo run --release --features sui -- \
+    --config-path ./config_sui_stateful.json \
+    --target-module calculator_module \
+    --functions add,sub
+  ```
+
+Note: in stateful mode, if a `fuzz_init` entry function exists in the target module, it is invoked automatically during each state reset.
 
 
-To run the fuzzer just use (with rust and cargo installed):
 
-```bash
-$ make CONFIG_PATH="./config.json" TARGET_MODULE="calculator_module" TARGET_FUNCTIONS="add,sub"
-```
-
-You need to have a package path in the *contract* item in the config.
 
 #### Configuration
 
-Here is an example of config:
+Configuration file (JSON) with a clean example (no comments), followed by field descriptions.
 
 ```json
 {
-  "use_ui": true, // Do you want the nice UI or not ?
-  "nb_threads": 8, // The number of threads used by the fuzzer
-  "seed": 4242, // The inital seed
-  "contract": "./examples/fuzzinglabs_package/build/fuzzinglabs_package/bytecode_modules/fuzzinglabs_module.mv", // The path to the compiled module / package
-  "execs_before_cov_update": 10000, // When the coverage is shared between the threads (don't modify if you don't know why)
-  "corpus_dir": "./corpus", // Path to where the corpus are written
-  "crashes_dir": "./crashes", // Path to where the crashfiles are written
-  "fuzz_functions_prefix": "fuzz_", // Fuzzing functions prefix (can be listed by the fuzzer)
-  "max_call_sequence_size": 5 // Maximum size of a generated call sequence (only for stateful fuzzing)
+  "use_ui": true,
+  "nb_threads": 8,
+  "seed": 4242,
+  "contract": "./examples/fuzzinglabs_package/build/fuzzinglabs_package/bytecode_modules/fuzzinglabs_module.mv",
+  "execs_before_cov_update": 10000,
+  "execs_before_status_print": 100000,
+  "corpus_dir": "./corpus",
+  "crashes_dir": "./crashes",
+  "fuzz_functions_prefix": "fuzz_",
+  "max_call_sequence_size": 5,
+  "aptos_helpers": {},
+  "aptos_trace_log": null,
+  "aptos_stateful_trace_log": null,
+  "aptos_build_log": null
 }
 ```
 
-> You can find more information on how to use the fuzzer in **./doc/how_to_use_stateless.md** and in **./doc/how_to_use_stateful.md** .
+Field descriptions:
+- `use_ui`: Enable the TUI.
+- `nb_threads`: Number of worker threads.
+- `seed`: RNG seed.
+- `contract`: Path to the contract. For Sui stateless, this is a compiled `.mv` file. For Aptos (stateless/stateful) and Sui stateful, this is the Move package directory (contains `Move.toml` and `sources/`).
+- `execs_before_cov_update`: Frequency of coverage sync.
+- `execs_before_status_print`: Status print interval in non-UI mode (optional).
+- `corpus_dir`: Output directory for corpus files.
+- `crashes_dir`: Output directory for crash files.
+- `fuzz_functions_prefix`: Function prefix to list/fuzz.
+- `max_call_sequence_size`: Maximum call sequence size (stateful only).
+- `aptos_helpers`: Aptos helper mapping (Aptos only).
+- `aptos_trace_log`: Path to Aptos stateless trace log (Aptos only, optional).
+- `aptos_stateful_trace_log`: Path to Aptos stateful trace log (Aptos only, optional).
+- `aptos_build_log`: Path to Aptos package build log (Aptos only, optional).
+
+Feedback notes:
+- Sui stateless collects Move VM coverage, maintains a coverage set, and uses it to guide subsequent mutations.
+- Aptos stateless does not currently report coverage.
+- Aptos stateful uses gas usage as a feedback signal to scale mutation intensity.
 
 ## Using Docker
 
-You can also use the provided **docker_run.sh** script to launch it in a container, use the same arguments for the script as for the Makefile (Documentation in **./doc/how_to_use_stateless.md** and **./doc/how_to_use_stateful.md**).
+You can also use the provided **docker_run.sh** script to launch it in a container (Sui only). Aptos Docker is not supported.
 
 ```bash
 $ ./docker_run.sh CONFIG_PATH="./config.json" TARGET_MODULE="fuzzinglabs_module" TARGET_FUNCTION="fuzzinglabs"

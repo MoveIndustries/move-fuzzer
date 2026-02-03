@@ -43,10 +43,14 @@ pub struct Ui {
     seed: u64,
     stats_widget: Option<StatsWidget>,
     events_widget: EventsWidget,
+    // Fuzzing mode (stateful or stateless)
+    is_stateful: bool,
+    // Platform (aptos or sui)
+    platform: String,
 }
 
 impl Ui {
-    pub fn new(nb_threads: u8, seed: u64) -> Self {
+    pub fn new(nb_threads: u8, seed: u64, is_stateful: bool, platform: &str) -> Self {
         // Setup panic hook
         Self::initialize_panic_handler();
         let terminal = Self::setup_terminal();
@@ -60,6 +64,8 @@ impl Ui {
             scroll: 0,
             stats_widget: None,
             events_widget: EventsWidget::new(),
+            is_stateful,
+            platform: platform.to_string(),
         }
     }
 
@@ -118,9 +124,10 @@ impl Ui {
                     .split(frame.size());
 
                 // Draws main block
+                let mode = if self.is_stateful { "stateful" } else { "stateless" };
                 let main_block = Block::default().borders(Borders::ALL).title(format!(
-                    "Sui Fuzzer, {} threads (q to quit)",
-                    self.nb_threads
+                    "Move Fuzzer [{}] [{}], {} threads (q to quit)",
+                    self.platform, mode, self.nb_threads
                 ));
                 frame.render_widget(main_block, frame.size());
 

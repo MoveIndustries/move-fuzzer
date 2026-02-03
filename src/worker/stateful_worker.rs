@@ -1,27 +1,219 @@
 use std::{
     collections::HashSet,
+    fs::File,
+    io::Write,
     sync::{Arc, RwLock},
     time::Instant,
 };
 
 use bichannel::Channel;
+#[cfg(feature = "sui")]
 use move_model::ty::Type;
+#[cfg(feature = "aptos")]
+use move_model::metadata::{CompilerVersion, LanguageVersion};
 use rand::{seq::SliceRandom, thread_rng};
-
 use crate::{
     detector::detector::AvailableDetector,
     fuzzer::{coverage::Coverage, crash::Crash, stats::Stats},
     mutator::{mutator::Mutator, rng::Rng, types::Type as FuzzerType},
-    runner::{
-        runner::StatefulRunner,
-        stateless_runner::sui_runner_utils::{
-            generate_abi_from_source, generate_abi_from_source_starts_with,
-        },
-    },
+    runner::runner::StatefulRunner,
     worker::worker::WorkerEvent,
 };
 
+#[cfg(feature = "sui")]
+use crate::runner::stateless_runner::sui_runner_utils::{
+    generate_abi_from_source, generate_abi_from_source_starts_with,
+};
+
 use super::worker::Worker;
+
+#[cfg(feature = "aptos")]
+fn convert_move_type_to_fuzzer_type(move_type: &move_model::ty::Type) -> crate::mutator::types::Type {
+    use crate::mutator::types::Type as FuzzerType;
+    use move_model::ty::{PrimitiveType, Type as MoveType};
+    match move_type {
+        MoveType::Primitive(prim) => match prim {
+            PrimitiveType::U8 => FuzzerType::U8(0),
+            PrimitiveType::U16 => FuzzerType::U16(0),
+            PrimitiveType::U32 => FuzzerType::U32(0),
+            PrimitiveType::U64 => FuzzerType::U64(0),
+            PrimitiveType::U128 => FuzzerType::U128(0),
+            PrimitiveType::Bool => FuzzerType::Bool(false),
+            PrimitiveType::Address => FuzzerType::Address([0; 32]),
+            PrimitiveType::Signer => FuzzerType::Address([0; 32]),
+            _ => FuzzerType::U64(0), // Default fallback
+        },
+        MoveType::Vector(inner) => {
+            let inner_type = convert_move_type_to_fuzzer_type(inner);
+            FuzzerType::Vector(Box::new(inner_type.clone()), vec![inner_type])
+        },
+        MoveType::Struct(_, _, _) => {
+            // For structs, create a basic struct with one field
+            FuzzerType::Struct(vec![FuzzerType::U64(0)])
+        },
+        MoveType::Reference(_, inner) => {
+            // For references, convert the inner type and make it a reference
+            let inner_type = convert_move_type_to_fuzzer_type(inner);
+            FuzzerType::Reference(false, Box::new(inner_type))
+        },
+        _ => {
+            // For any other types, default to U64
+            FuzzerType::U64(0)
+        }
+    }
+}
+
+#[cfg(feature = "aptos")]
+fn is_signer_param(move_type: &move_model::ty::Type) -> bool {
+    use move_model::ty::{PrimitiveType, Type as MoveType};
+    match move_type {
+        MoveType::Primitive(PrimitiveType::Signer) => true,
+        MoveType::Reference(_, inner) => is_signer_param(inner),
+        _ => false,
+    }
+}
+
+#[cfg(feature = "aptos")]
+fn generate_abi_from_source(
+    contract: &str,
+    target_module: &str,
+    target_function: &str
+) -> (Vec<crate::mutator::types::Type>, usize) {
+    use move_package::{BuildConfig, ModelConfig};
+    use move_package::compilation::model_builder::ModelBuilder;
+    use std::path::Path;
+
+    let build_config = BuildConfig {
+        test_mode: true,
+        ..Default::default()
+    };
+
+    let resolution_graph = build_config
+        .resolution_graph_for_package(Path::new(contract), &mut std::io::stderr())
+        .unwrap();
+
+    #[cfg(feature="sui")]
+    let source_env = ModelBuilder::create(
+        resolution_graph,
+        ModelConfig {
+            all_files_as_targets: false,
+            target_filter: None,
+        },
+    )
+    .build_model()
+    .unwrap();
+
+    #[cfg(feature="aptos")]
+    let source_env = ModelBuilder::create(
+        resolution_graph,
+        ModelConfig {
+            all_files_as_targets: false,
+            target_filter: None,
+            compiler_version: CompilerVersion::default(),
+            language_version: LanguageVersion::default()
+        },
+    )
+    .build_model()
+    .unwrap();
+
+    let module_env = source_env
+        .get_modules()
+        .find(|m| m.matches_name(target_module));
+
+    let (params, max_coverage) = if let Some(env) = module_env {
+        let func = env
+            .get_functions()
+            .find(|f| f.get_name_str() == target_function);
+        if let Some(f) = func {
+
+            let max_coverage = f.get_bytecode().map(|b| b.len()).unwrap_or(0);
+            let params = f
+                .get_parameters()
+                .iter()
+                .filter(|p| !is_signer_param(&p.1))
+                .map(|p| convert_move_type_to_fuzzer_type(&p.1))
+                .collect();
+            (params, max_coverage)
+        } else {
+            panic!("Could not find target function !");
+        }
+    } else {
+        panic!("Could not find target module {} !", target_module);
+    };
+
+    (params, max_coverage)
+}
+
+
+#[cfg(feature = "aptos")]
+fn generate_abi_from_source_starts_with(
+    contract: &str,
+    target_module: &str,
+    prefix: &str
+) -> Vec<(String, Vec<crate::mutator::types::Type>, Vec<crate::mutator::types::Type>)> {
+    use move_package::{BuildConfig, ModelConfig};
+    use move_package::compilation::model_builder::ModelBuilder;
+    use std::path::Path;
+
+    let build_config = BuildConfig {
+        test_mode: true,
+        ..Default::default()
+    };
+
+    let resolution_graph = build_config
+        .resolution_graph_for_package(Path::new(contract), &mut std::io::stderr())
+        .unwrap();
+
+    let source_env = ModelBuilder::create(
+        resolution_graph,
+        ModelConfig {
+            all_files_as_targets: false,
+            target_filter: None,
+            compiler_version: CompilerVersion::default(),
+            language_version: LanguageVersion::default()
+        },
+    )
+    .build_model()
+    .unwrap();
+
+    let module_env = source_env
+        .get_modules()
+        .find(|m| m.matches_name(target_module))
+        .unwrap_or_else(|| panic!("Could not find target module {}", target_module));
+
+    let mut functions = Vec::new();
+    for func_env in module_env.get_functions() {
+        if func_env.get_name_str().starts_with(prefix) {
+            let params: Vec<crate::mutator::types::Type> = func_env
+                .get_parameters()
+                .iter()
+                .map(|p| convert_move_type_to_fuzzer_type(&p.1))
+                .collect();
+
+            // Extract actual return types from function signature
+            #[cfg(feature="sui")]
+            let return_types: Vec<crate::mutator::types::Type> = func_env
+                .get_return_types()
+                .iter()
+                .map(|return_type| convert_move_type_to_fuzzer_type(return_type))
+                .collect();
+            #[cfg(feature="aptos")]
+            let return_types: Vec<crate::mutator::types::Type> = vec![
+    convert_move_type_to_fuzzer_type(&func_env.get_result_type())
+];
+
+
+
+            functions.push((
+                func_env.get_name_str().to_string(),
+                params,
+                return_types,
+            ));
+        }
+    }
+
+    functions
+}
 
 #[allow(dead_code)]
 const STATE_INIT_POSTFIX: &str = "init";
@@ -33,10 +225,11 @@ pub struct StatefulWorker {
     mutator: Box<dyn Mutator>,
     rng: Rng,
     unique_crashes_set: HashSet<Crash>,
-    // Available functions
     target_functions: Vec<FuzzerType>,
     fuzz_functions: Vec<FuzzerType>,
     max_call_sequence_size: u32,
+    detectors: Option<Vec<AvailableDetector>>,
+    trace_log: Option<Arc<std::sync::Mutex<File>>>,
 }
 
 impl StatefulWorker {
@@ -49,11 +242,12 @@ impl StatefulWorker {
         mutator: Box<dyn Mutator>,
         seed: u64,
         _execs_before_cov_update: u64,
-        _available_detectors: Option<Vec<AvailableDetector>>,
+        available_detectors: Option<Vec<AvailableDetector>>,
         target_module: &str,
         target_functions: Vec<String>,
         fuzz_prefix: String,
         max_call_sequence_size: u32,
+        trace_log: Option<Arc<std::sync::Mutex<File>>>,
     ) -> Self {
         // Gets info on targeted functions
         let mut functions = vec![];
@@ -75,7 +269,17 @@ impl StatefulWorker {
         if let Some(pos) = functions_abi.iter().position(|f| f.0 == "fuzz_init") {
             functions_abi.remove(pos);
         }
+        #[cfg(feature = "sui")]
         for (function_name, parameters) in functions_abi {
+            fuzz_functions.push(FuzzerType::Function(
+                function_name,
+                Self::transform_params(parameters),
+                None,
+            ));
+        }
+
+        #[cfg(feature = "aptos")]
+        for (function_name, parameters, _return_types) in functions_abi {
             fuzz_functions.push(FuzzerType::Function(
                 function_name,
                 Self::transform_params(parameters),
@@ -96,15 +300,23 @@ impl StatefulWorker {
             fuzz_functions: fuzz_functions,
             unique_crashes_set: HashSet::new(),
             max_call_sequence_size,
+            detectors: available_detectors,
+            trace_log,
         }
     }
 
+    #[cfg(feature = "sui")]
     fn transform_params(params: Vec<Type>) -> Vec<FuzzerType> {
         let mut res = vec![];
         for param in params {
             res.push(FuzzerType::from(param));
         }
         res
+    }
+
+    #[cfg(feature = "aptos")]
+    fn transform_params(params: Vec<crate::mutator::types::Type>) -> Vec<FuzzerType> {
+        params
     }
 
     fn generate_call_sequence(&self, size: u32) -> Vec<FuzzerType> {
@@ -121,6 +333,15 @@ impl StatefulWorker {
         call_sequence.shuffle(&mut thread_rng());
         call_sequence
     }
+
+    fn log_line(&self, line: &str) {
+        if let Some(trace_log) = &self.trace_log {
+            if let Ok(mut file) = trace_log.lock() {
+                let _ = writeln!(file, "{}", line);
+            }
+        }
+    }
+
 }
 
 impl Worker for StatefulWorker {
@@ -136,6 +357,11 @@ impl Worker for StatefulWorker {
                 .try_into()
                 .unwrap();
             let call_sequence = self.generate_call_sequence(call_sequence_size);
+            let call_sequence_names: Vec<String> = call_sequence
+                .iter()
+                .filter_map(|f| f.as_function().map(|(name, _, _)| name))
+                .map(|name| name.to_string())
+                .collect();
 
             // Call each function in the call sequence
             for function in call_sequence {
@@ -145,12 +371,14 @@ impl Worker for StatefulWorker {
                 // Input initialization
                 let mut inputs = function.as_function().unwrap().1.clone();
 
-                // Mutate inputs
-                inputs = self.mutator.mutate(&inputs, 4);
+                // Mutate inputs with gas bias
+                let current_gas = self.stats.read().unwrap().get_max_gas(&function);
+                inputs = self.mutator.mutate_with_gas(&inputs, 4, Some(current_gas));
 
-                //eprintln!("{} {:?}", function.as_function().unwrap().0, inputs);
-
-                let exec_result = self.runner.execute(inputs.clone());
+                // Log trace with inputs (after mutation)
+                if let Some((name, _, _)) = function.as_function() {
+                    self.log_line(&format!("TRACE: {}::{}({:?})", self.runner.get_target_module(), name, inputs));
+                }
 
                 self.stats.write().unwrap().execs += 1;
 
@@ -163,29 +391,67 @@ impl Worker for StatefulWorker {
                     self.stats.write().unwrap().execs_per_sec = tmp / sec_elapsed;
                 }
 
-                match exec_result {
-                    Ok(_) => continue,
-                    Err((_cov, error)) => {
-                        self.stats.write().unwrap().crashes += 1;
-                        let crash = Crash::new(
-                            &self.runner.get_target_module(),
-                            &self.runner.get_target_function().as_function().unwrap().0,
-                            &inputs,
-                            &error,
-                        );
-                        if !self.unique_crashes_set.contains(&crash) {
-                            self.channel
-                                .send(WorkerEvent::NewCrash(
-                                    self.runner
-                                        .get_target_function()
-                                        .as_function()
-                                        .unwrap()
-                                        .0
-                                        .to_string(),
-                                    inputs.clone(),
-                                    error,
-                                ))
-                                .unwrap();
+                if let Some(gas_runner) = self.runner.as_gas_runner() {
+                    match gas_runner.execute_with_gas(inputs.clone()) {
+                        Ok((_cov, gas_used)) => {
+                            // Update gas usage when execution succeeds
+                            self.stats.write().unwrap().update_gas_usage(&function, gas_used);
+                            self.log_line(&format!("  -> SUCCESS (gas: {})", gas_used));
+                        }
+                        Err((_cov, error)) => {
+                            self.log_line(&format!("  -> FAILURE: {:?}", error));
+                            self.stats.write().unwrap().crashes += 1;
+                            let crash = Crash::new(
+                                &self.runner.get_target_module(),
+                                &self.runner.get_target_function().as_function().unwrap().0,
+                                &inputs,
+                                &error,
+                            )
+                            .with_call_sequence(call_sequence_names.clone());
+                            if !self.unique_crashes_set.contains(&crash) {
+                                self.channel
+                                    .send(WorkerEvent::NewCrash(
+                                        self.runner
+                                            .get_target_function()
+                                            .as_function()
+                                            .unwrap()
+                                            .0
+                                            .to_string(),
+                                        inputs.clone(),
+                                        error,
+                                        Some(call_sequence_names.clone()),
+                                    ))
+                                    .unwrap();
+                            }
+                        }
+                    }
+                } else {
+                    match self.runner.execute(inputs.clone()) {
+                        Ok(_cov) => {}
+                        Err((_cov, error)) => {
+                            self.stats.write().unwrap().crashes += 1;
+                            let crash = Crash::new(
+                                &self.runner.get_target_module(),
+                                &self.runner.get_target_function().as_function().unwrap().0,
+                                &inputs,
+                                &error,
+                            )
+                            .with_call_sequence(call_sequence_names.clone());
+                            if !self.unique_crashes_set.contains(&crash) {
+                                self.channel
+                                    .send(WorkerEvent::NewCrash(
+                                        self.runner
+                                            .get_target_function()
+                                            .as_function()
+                                            .unwrap()
+                                            .0
+                                            .to_string(),
+                                        inputs.clone(),
+                                        error,
+                                        Some(call_sequence_names.clone()),
+                                    ))
+                                    .unwrap();
+                            }
                         }
                     }
                 }

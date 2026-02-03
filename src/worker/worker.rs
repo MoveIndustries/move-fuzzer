@@ -8,7 +8,7 @@ use crate::{
 
 #[derive(Clone)]
 pub enum WorkerEvent {
-    NewCrash(String, Vec<Type>, Error),
+    NewCrash(String, Vec<Type>, Error, Option<Vec<String>>),
     NewUniqueCrash(Crash),
     CoverageUpdateRequest(HashSet<Coverage>),
     CoverageUpdateResponse(HashSet<Coverage>),

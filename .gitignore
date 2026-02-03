@@ -4,5 +4,8 @@ crashes/
 corpus/
 
 Cargo.lock
+.cargo/
 
-log
+*.log
+
+**/build

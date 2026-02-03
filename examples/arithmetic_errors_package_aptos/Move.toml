@@ -1,0 +1,6 @@
+[package]
+name = "arithmetic_errors_package_aptos"
+version = "0.0.1"
+
+[addresses]
+arithmetic_errors_package = "0xCAFE"

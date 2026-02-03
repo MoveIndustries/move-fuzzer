@@ -9,6 +9,8 @@ pub struct Crash {
     pub target_function: String,
     pub inputs: Vec<Type>,
     pub error: Error,
+    #[serde(default)]
+    pub call_sequence: Option<Vec<String>>,
 }
 
 impl Crash {
@@ -23,7 +25,13 @@ impl Crash {
             target_function: target_function.to_string(),
             inputs: inputs.clone(),
             error: error.clone(),
+            call_sequence: None,
         }
+    }
+
+    pub fn with_call_sequence(mut self, call_sequence: Vec<String>) -> Self {
+        self.call_sequence = Some(call_sequence);
+        self
     }
 }
 

@@ -1,3 +1,4 @@
+#[cfg(feature = "sui")]
 use std::sync::Arc;
 use itertools::Itertools;
 use move_core_types::runtime_value::MoveValue;
@@ -142,6 +143,10 @@ impl Runner for SuiRunner {
         // Removes TxContext reference
         inputs.pop();
 
+        /*
+        Choose a random object ID from self.obj_ids
+        For value, wrap into SuiJson format
+         */
         for i in &generate_inputs(inputs) {
             args.push(match i {
                 MoveValue::Address(_) => SuiJsonValue::from_object_id(
@@ -153,7 +158,9 @@ impl Runner for SuiRunner {
                 _ => SuiJsonValue::new(move_value_to_json(i)).unwrap(),
             });
         }
-
+        /*
+        Send the mutated transaction and wait for response
+         */
         let response;
         response = self.send_transaction(
             &self
@@ -167,9 +174,17 @@ impl Runner for SuiRunner {
         );
 
         match response {
-            Ok(resp) => match resp.status() {
+            Ok(resp) => {
+                match resp.status() {
                 ExecutionStatus::Success => Ok(None),
-                ExecutionStatus::Failure { error, command: _ } => match error {
+
+                /*
+                If execution fails, match different type of failures
+                1. PrimitiveRuntimeError, directly return error
+                 */
+
+                ExecutionStatus::Failure { error, command: _ } => {
+                    match error {
                     ExecutionFailureStatus::MovePrimitiveRuntimeError(loc) => {
                         if let Some(location) = &loc.0 {
                             let error = Error::Runtime {
@@ -210,15 +225,19 @@ impl Runner for SuiRunner {
                             message: error.to_string(),
                         },
                     )),
-                },
+                }
             },
-            Err(err) => Err((
-                None,
-                Error::Unknown {
+            }
+        },
+            Err(err) => {
+                Err((
+                    None,
+                    Error::Unknown {
                     message: err.to_string(),
                 },
-            )),
-        }
+            ))
+        },
+    }
     }
 
     fn get_target_parameters(&self) -> Vec<FuzzerType> {
