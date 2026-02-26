@@ -69,6 +69,35 @@ git clone --recurse-submodules https://github.com/MoveIndustries/move-fuzzer.git
 Note: in stateful mode, if a `fuzz_init` entry function exists in the target module, it is invoked automatically during each state reset.
 
 
+#### GitHub Actions (CI fuzzing)
+
+This repo includes a workflow at `.github/workflows/move-fuzzer.yaml` that runs matrix fuzzing from `.github/workflows/fuzz_targets.json`.
+
+Manual steps for users:
+
+1. Edit `.github/workflows/fuzz_targets.json` and define target entries under `include`.
+2. For each target, set:
+   - `id`: unique target name
+   - `chain`: `aptos` or `sui`
+   - `mode`: `stateless` or `stateful`
+   - `rust`: toolchain version (`1.86.0` for Aptos targets, `1.75` for Sui targets)
+   - `config`: path to the config file (for example `config_aptos_stateless.json`)
+   - `target_module`: Move module name
+   - `target_function`: required for stateless mode
+   - `functions`: required for stateful mode (comma-separated, for example `add,sub`)
+   - `sui_build_path`: for Sui stateless, set package path to build before fuzzing (for example `./examples/fuzzinglabs_package`)
+3. In GitHub: **Actions** -> **Move Fuzzer** -> **Run workflow**.
+4. Choose:
+   - `target`: `all` or a specific `id` from `fuzz_targets.json`
+   - `fuzz_seconds`: per-target fuzz duration
+
+CI behavior notes:
+
+- The workflow generates `config_ci.json` at runtime (not committed), based on each target's `config`.
+- It enforces CI-safe overrides: `use_ui=false`, `nb_threads=1`, `execs_before_status_print=10000`.
+- Other config fields (including `aptos_helpers`) are preserved.
+- Artifacts `corpus/`, `crashes/`, and `*.log` are uploaded per matrix target.
+
 
 
 #### Configuration
@@ -109,6 +138,23 @@ Field descriptions:
 - `aptos_trace_log`: Path to Aptos stateless trace log (Aptos only, optional).
 - `aptos_stateful_trace_log`: Path to Aptos stateful trace log (Aptos only, optional).
 - `aptos_build_log`: Path to Aptos package build log (Aptos only, optional).
+
+`aptos_helpers` example:
+
+```json
+{
+  "aptos_helpers": {
+    "arithmetic_errors_module::fuzz_u64_overflow": "noop_v1",
+    "calculator_module::add": "noop_v1"
+  }
+}
+```
+
+Notes:
+- Key format is `"<module>::<function>"`.
+- Value must be a registered helper name (current built-in example: `noop_v1`).
+- Helper registrations live in `src/runner/aptos_helpers/registry.rs`.
+- `noop_v1` is a dummy passthrough helper; real helpers are for contract-specific setup and argument transformation (for example initializing resources, creating prerequisite state, or enforcing input shape constraints before execution).
 
 Feedback notes:
 - Sui stateless collects Move VM coverage, maintains a coverage set, and uses it to guide subsequent mutations.

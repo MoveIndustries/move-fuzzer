@@ -1,0 +1,48 @@
+{
+  "include": [
+    {
+      "id": "aptos-stateless",
+      "chain": "aptos",
+      "mode": "stateless",
+      "rust": "1.86.0",
+      "config": "config_aptos_stateless.json",
+      "target_module": "arithmetic_errors_module",
+      "target_function": "fuzz_u64_overflow",
+      "functions": "",
+      "sui_build_path": ""
+    },
+    {
+      "id": "aptos-stateful",
+      "chain": "aptos",
+      "mode": "stateful",
+      "rust": "1.86.0",
+      "config": "config_aptos_stateful.json",
+      "target_module": "calculator_module",
+      "target_function": "",
+      "functions": "add,sub",
+      "sui_build_path": ""
+    },
+    {
+      "id": "sui-stateless",
+      "chain": "sui",
+      "mode": "stateless",
+      "rust": "1.75",
+      "config": "config_sui_stateless.json",
+      "target_module": "fuzzinglabs_module",
+      "target_function": "fuzzinglabs",
+      "functions": "",
+      "sui_build_path": "./examples/fuzzinglabs_package"
+    },
+    {
+      "id": "sui-stateful",
+      "chain": "sui",
+      "mode": "stateful",
+      "rust": "1.75",
+      "config": "config_sui_stateful.json",
+      "target_module": "calculator_module",
+      "target_function": "",
+      "functions": "add,sub",
+      "sui_build_path": ""
+    }
+  ]
+}

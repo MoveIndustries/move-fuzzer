@@ -1,0 +1,170 @@
+name: Move Fuzzer
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target id to run, or all"
+        required: false
+        default: "all"
+      fuzz_seconds:
+        description: "How long each target runs"
+        required: false
+        default: "120"
+      targets_file:
+        description: "Path to matrix JSON"
+        required: false
+        default: ".github/workflows/fuzz_targets.json"
+
+concurrency:
+  group: move-fuzzer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-targets:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Load targets
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGETS_FILE="${{ inputs.targets_file || '.github/workflows/fuzz_targets.json' }}"
+          TARGET_ID="${{ inputs.target || 'all' }}"
+
+          if [ ! -f "$TARGETS_FILE" ]; then
+            echo "Targets file not found: $TARGETS_FILE" >&2
+            exit 1
+          fi
+
+          jq -e '.include and (.include | type == "array")' "$TARGETS_FILE" >/dev/null
+
+          if [ "$TARGET_ID" = "all" ]; then
+            MATRIX_JSON="$(jq -c '.' "$TARGETS_FILE")"
+          else
+            MATRIX_JSON="$(jq -c --arg id "$TARGET_ID" '{include: [.include[] | select(.id == $id)]}' "$TARGETS_FILE")"
+          fi
+
+          COUNT="$(echo "$MATRIX_JSON" | jq '.include | length')"
+          echo "Selected target count: $COUNT"
+
+          echo "matrix<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: prepare-targets
+    if: ${{ fromJson(needs.prepare-targets.outputs.matrix).include[0] != null }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-targets.outputs.matrix) }}
+
+    env:
+      CARGO_TERM_COLOR: always
+      FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '120' }}
+
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: move-fuzzer-${{ matrix.chain }}-${{ matrix.rust }}
+
+      - name: Build fuzzer
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./build-aptos.sh ./build-sui.sh
+          if [ "${{ matrix.chain }}" = "aptos" ]; then
+            ./build-aptos.sh
+          else
+            ./build-sui.sh
+          fi
+
+      - name: Build Sui stateless module
+        if: ${{ matrix.chain == 'sui' && matrix.mode == 'stateless' && matrix.sui_build_path != '' }}
+        run: cargo run --manifest-path ./sui/Cargo.toml -p sui --bin sui -- move build --path "${{ matrix.sui_build_path }}"
+
+      - name: Create CI config
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq '.use_ui = false | .nb_threads = 1 | .execs_before_status_print = 10000' "${{ matrix.config }}" > ./config_ci.json
+
+      - name: Run fuzzer (bounded)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CMD=(cargo run --release --features "${{ matrix.chain }}" -- --config-path ./config_ci.json --target-module "${{ matrix.target_module }}")
+
+          if [ "${{ matrix.mode }}" = "stateless" ]; then
+            TARGET_FUNCTION="${{ matrix.target_function }}"
+            if [ -z "$TARGET_FUNCTION" ]; then
+              echo "Missing target_function for stateless target ${{ matrix.id }}" >&2
+              exit 1
+            fi
+            CMD+=(--target-function "$TARGET_FUNCTION")
+          else
+            FUNCTIONS="${{ matrix.functions }}"
+            if [ -z "$FUNCTIONS" ]; then
+              echo "Missing functions for stateful target ${{ matrix.id }}" >&2
+              exit 1
+            fi
+            CMD+=(--functions "$FUNCTIONS")
+          fi
+
+          echo "Running: ${CMD[*]}"
+
+          set +e
+          timeout --signal=SIGINT --kill-after=30s "${FUZZ_SECONDS}s" "${CMD[@]}"
+          STATUS=$?
+          set -e
+
+          if [ "$STATUS" -eq 0 ] || [ "$STATUS" -eq 124 ] || [ "$STATUS" -eq 130 ]; then
+            exit 0
+          fi
+
+          exit "$STATUS"
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzer-${{ matrix.id }}
+          if-no-files-found: ignore
+          path: |
+            corpus/
+            crashes/
+            *.log
+
+  no-targets:
+    needs: prepare-targets
+    if: ${{ fromJson(needs.prepare-targets.outputs.matrix).include[0] == null }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: No targets selected
+        run: |
+          echo "No fuzz targets selected. Check workflow input 'target' and your fuzz_targets.json." >> "$GITHUB_STEP_SUMMARY"
