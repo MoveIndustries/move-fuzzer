@@ -55,6 +55,7 @@ pub fn generate_inputs(inputs: Vec<FuzzerType>) -> Vec<MoveValue> {
             FuzzerType::U64(value) => res.push(MoveValue::U64(value)),
             FuzzerType::U128(value) => res.push(MoveValue::U128(value)),
             FuzzerType::Bool(value) => res.push(MoveValue::Bool(value)),
+            FuzzerType::Address(value) => res.push(MoveValue::Address(AccountAddress::new(value))),
             FuzzerType::Vector(_, vec) => {
                 res.push(MoveValue::Vector(generate_inputs(vec)))
             }
