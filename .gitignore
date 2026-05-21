@@ -9,3 +9,6 @@ Cargo.lock
 *.log
 
 **/build
+
+*.code-workspace
+CLAUDE.md
